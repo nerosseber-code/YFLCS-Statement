@@ -3,27 +3,33 @@ import * as XLSX from "xlsx";
 
 const SUPABASE_URL = "https://jzcgedxiaqndsoprziqx.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp6Y2dlZHhpYXFuZHNvcHJ6aXF4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzNTY5MjksImV4cCI6MjA4ODkzMjkyOX0.55lSbLC63mMKBohVwWmwBhqE-WjlDUTJjz-Fgl7O5mY";
-const DRAFT_KEY = "yflcs_draft";
+const DRAFTS_KEY = "yflcs_drafts";
 
-// ─── 草稿（本地存储）──────────────────────────────────────────────────────────
+// ─── 多草稿（本地存储）────────────────────────────────────────────────────────
+const loadAllDrafts = () => {
+  try { return JSON.parse(localStorage.getItem(DRAFTS_KEY) || "{}"); }
+  catch { return {}; }
+};
+
 const saveDraft = (step, contract, items, settlementMode) => {
+  if (!contract?.contract_no) return;
   try {
-    localStorage.setItem(DRAFT_KEY, JSON.stringify({
-      step, contract, items, settlementMode,
-      savedAt: new Date().toISOString(),
-    }));
+    const all = loadAllDrafts();
+    all[contract.contract_no] = { step, contract, items, settlementMode, savedAt: new Date().toISOString() };
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
   } catch {}
 };
 
-const loadDraft = () => {
+const clearDraft = (contractNo) => {
   try {
-    const raw = localStorage.getItem(DRAFT_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
+    const all = loadAllDrafts();
+    delete all[contractNo];
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
+  } catch {}
 };
 
-const clearDraft = () => {
-  try { localStorage.removeItem(DRAFT_KEY); } catch {}
+const clearAllDrafts = () => {
+  try { localStorage.removeItem(DRAFTS_KEY); } catch {}
 };
 
 // ─── Supabase ──────────────────────────────────────────────────────────────────
@@ -420,21 +426,19 @@ export default function App() {
   const [loadingMsg, setLoadingMsg] = useState("");
   const [error, setError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
-  const [draftBanner, setDraftBanner] = useState(null); // 草稿提示信息
+  const [drafts, setDrafts] = useState({}); // 所有草稿
+  const [showDraftPanel, setShowDraftPanel] = useState(false);
 
-  // ── 启动时检查草稿 ──
+  // ── 启动时加载所有草稿 ──
   useEffect(() => {
-    const draft = loadDraft();
-    if (draft && draft.step >= 1 && draft.contract) {
-      const savedAt = new Date(draft.savedAt).toLocaleString("zh-CN");
-      setDraftBanner({ draft, savedAt });
-    }
+    setDrafts(loadAllDrafts());
   }, []);
 
-  // ── 自动保存草稿（每次状态变化时） ──
+  // ── 自动保存草稿 ──
   useEffect(() => {
-    if (step >= 1 && contract) {
+    if (step >= 1 && contract?.contract_no) {
       saveDraft(step, contract, items, settlementMode);
+      setDrafts(loadAllDrafts());
     }
   }, [step, contract, items, settlementMode]);
 
@@ -443,12 +447,15 @@ export default function App() {
     setContract(draft.contract);
     setItems(draft.items);
     setSettlementMode(draft.settlementMode || "contract");
-    setDraftBanner(null);
+    setShowDraftPanel(false);
+    setPage("main");
   };
 
-  const discardDraft = () => {
-    clearDraft();
-    setDraftBanner(null);
+  const deleteDraft = (contractNo) => {
+    clearDraft(contractNo);
+    setDrafts(loadAllDrafts());
+    // 如果删的是当前编辑中的草稿，重置
+    if (contract?.contract_no === contractNo) resetAll();
   };
 
   // ── 数量输入 ──
@@ -527,7 +534,8 @@ export default function App() {
     const settlement = calcSettlement(contract, committed, settlementMode);
     const contractWithMode = {...contract, settlement_mode: settlementMode};
     generateExcel(contractWithMode, committed, settlement);
-    clearDraft(); // 导出成功，清除草稿
+    clearDraft(contract.contract_no); // 导出成功，清除该合同草稿
+    setDrafts(loadAllDrafts());
     try {
       setSaveMsg("正在保存记录…");
       await saveStatement(contractWithMode, committed, settlement);
@@ -537,7 +545,8 @@ export default function App() {
   };
 
   const resetAll = () => {
-    clearDraft();
+    if (contract?.contract_no) clearDraft(contract.contract_no);
+    setDrafts(loadAllDrafts());
     setStep(0); setContract(null); setItems([]); setContractFile(null);
     setDeliveryFile(null); setError(""); setSaveMsg(""); setSettlementMode("contract");
   };
@@ -558,25 +567,43 @@ export default function App() {
           <p style={{color:"#64748b",fontSize:13,margin:0}}>上传采购合同 → 比对送货数量 → 一键导出 Excel 对账单</p>
         </div>
 
-        {/* 草稿恢复提示 */}
-        {draftBanner && (
-          <div style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
-            <div>
-              <span style={{fontWeight:700,color:"#92400e",fontSize:14}}>📝 发现未完成的草稿</span>
-              <span style={{fontSize:12,color:"#b45309",marginLeft:10}}>
-                {draftBanner.draft.contract?.buyer} · {draftBanner.draft.contract?.contract_no} · 保存于 {draftBanner.savedAt}
-              </span>
+        {/* 草稿面板 */}
+        {showDraftPanel && Object.keys(drafts).length > 0 && (
+          <div style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:12,padding:"16px 18px",marginBottom:16}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <span style={{fontWeight:700,color:"#92400e",fontSize:14}}>📝 草稿箱（{Object.keys(drafts).length} 个）</span>
+              <button onClick={()=>setShowDraftPanel(false)} style={{background:"none",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:16}}>✕</button>
             </div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>resumeDraft(draftBanner.draft)}
-                style={{padding:"6px 16px",background:"#1e293b",color:"#fff",border:"none",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer"}}>
-                继续编辑
-              </button>
-              <button onClick={discardDraft}
-                style={{padding:"6px 16px",background:"#fee2e2",color:"#dc2626",border:"none",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer"}}>
-                放弃草稿
-              </button>
-            </div>
+            {Object.values(drafts).sort((a,b)=>b.savedAt.localeCompare(a.savedAt)).map(d=>(
+              <div key={d.contract.contract_no} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 12px",background:"#fff",borderRadius:8,marginBottom:8,border:"1px solid #fde68a"}}>
+                <div>
+                  <span style={{fontWeight:700,color:"#1e293b",fontSize:13}}>{d.contract.contract_no}</span>
+                  <span style={{fontSize:12,color:"#64748b",marginLeft:10}}>{d.contract.buyer}</span>
+                  <span style={{fontSize:11,color:"#b45309",marginLeft:10}}>
+                    {["第1步","第2步","第3步"][d.step] || ""} · {new Date(d.savedAt).toLocaleString("zh-CN")}
+                  </span>
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>resumeDraft(d)}
+                    style={{padding:"4px 14px",background:"#1e293b",color:"#fff",border:"none",borderRadius:6,fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                    继续
+                  </button>
+                  <button onClick={()=>deleteDraft(d.contract.contract_no)}
+                    style={{padding:"4px 10px",background:"#fee2e2",color:"#dc2626",border:"none",borderRadius:6,fontSize:12,cursor:"pointer"}}>
+                    删除
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 草稿提示（有草稿但面板未展开时） */}
+        {!showDraftPanel && Object.keys(drafts).length > 0 && (
+          <div onClick={()=>setShowDraftPanel(true)}
+            style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:12,padding:"10px 18px",marginBottom:16,cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontWeight:600,color:"#92400e",fontSize:13}}>📝 有 {Object.keys(drafts).length} 个未完成草稿</span>
+            <span style={{fontSize:12,color:"#b45309"}}>点击查看 ▼</span>
           </div>
         )}
 
