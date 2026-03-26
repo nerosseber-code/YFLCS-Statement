@@ -128,7 +128,7 @@ const normalizeContract = (r) => ({
 });
 
 // ─── Claude API ────────────────────────────────────────────────────────────────
-const callClaude = async (messages, system) => {
+const callClaude = async (messages, system, maxTokens = 1200) => {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -137,7 +137,7 @@ const callClaude = async (messages, system) => {
       "anthropic-version": "2023-06-01",
       "anthropic-dangerous-direct-browser-access": "true",
     },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1200, system, messages }),
+    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: maxTokens, system, messages }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
@@ -147,29 +147,18 @@ const callClaude = async (messages, system) => {
   catch { throw new Error("模型返回的不是合法 JSON，请重试"); }
 };
 
-// ─── 匹配 / 结算 ───────────────────────────────────────────────────────────────
-const norm = (s = "") => String(s).replace(/\s+/g, "").replace(/[()（）\-\/]/g, "").toLowerCase();
-const scoreMatch = (a, b) => {
-  let s = 0;
-  if (norm(a.name) === norm(b.name)) s += 60;
-  else if (norm(b.name).includes(norm(a.name).slice(0, 3))) s += 20;
-  if (norm(a.spec) && norm(a.spec) === norm(b.spec)) s += 25;
-  if (norm(a.color) && norm(a.color) === norm(b.color)) s += 15;
-  return s;
-};
-const findBestMatch = (item, list) => {
-  let best = null, top = -1;
-  for (const d of list) { const s = scoreMatch(item, d); if (s > top) { best = d; top = s; } }
-  return top >= 60 ? best : null;
-};
-const calcSettlement = (contract, items, mode) => {
-  if (mode === "actual") {
-    const qtys = items.map((it) => toNumber(it.delivered_qty, 0)).filter((n) => n > 0);
-    const settleQty = qtys.length ? Math.min(...qtys) : 0;
-    return { settleQty, totalAmt: +(settleQty * toNumber(contract.unit_price, 0)).toFixed(2) };
-  }
-  const settleQty = toNumber(contract.contract_qty, 0);
-  return { settleQty, totalAmt: +(settleQty * toNumber(contract.unit_price, 0)).toFixed(2) };
+// ─── 结算 ──────────────────────────────────────────────────────────────────────
+const calcSettlement = (contract, deliveryItems) => {
+  const qtys = deliveryItems.map(it => toNumber(it.delivered_qty, 0)).filter(n => n > 0);
+  const minQty = qtys.length ? Math.min(...qtys) : 0;
+  const contractQty = toNumber(contract.contract_qty, 0);
+  const settleQty = Math.min(minQty, contractQty);
+  return {
+    minQty,
+    settleQty,
+    canSettle: minQty >= contractQty,
+    totalAmt: +(settleQty * toNumber(contract.unit_price, 0)).toFixed(2),
+  };
 };
 
 // ─── Excel ─────────────────────────────────────────────────────────────────────
@@ -261,49 +250,47 @@ const Steps = ({ current }) => (
   </div>
 );
 
-// ─── UI: CompareTable ──────────────────────────────────────────────────────────
-const CompareTable = ({ items, onChangeInput, onBlurQty }) => (
-  <div style={{overflowX:"auto"}}>
-    <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-      <thead><tr style={{background:"#1e293b",color:"#fff"}}>
-        {["物料名称","规格","颜色","单位","合同数量","实送数量","差异","状态"].map(h=>(
-          <th key={h} style={{padding:"10px 12px",fontWeight:600,whiteSpace:"nowrap"}}>{h}</th>
-        ))}
-      </tr></thead>
-      <tbody>{items.map((item,i)=>{
-        const qty=item.delivered_qty;
-        const diff=qty!==null&&qty!==undefined?toNumber(qty,0)-item.contract_qty:null;
-        const matched=diff!==null&&diff>=0;
-        return (
-          <tr key={i} style={{background:i%2?"#f8fafc":"#fff"}}>
-            <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0"}}>{item.name}</td>
-            <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0",fontSize:11,color:"#64748b"}}>{item.spec}</td>
-            <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0"}}>{item.color}</td>
-            <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0",textAlign:"center"}}>{item.unit}</td>
-            <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0",textAlign:"center",fontWeight:600}}>{item.contract_qty}</td>
-            <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0",textAlign:"center"}}>
-              <input type="number" min="0" value={item.delivered_qty_input??""}
-                onChange={e=>onChangeInput(i,e.target.value)} onBlur={()=>onBlurQty(i)}
-                style={{width:80,textAlign:"center",padding:"4px 6px",borderRadius:6,fontSize:13,outline:"none",
-                  border:qty===null||qty===undefined?"1px solid #cbd5e1":matched?"1px solid #22c55e":"1px solid #f97316",
-                  background:qty===null||qty===undefined?"#fff":matched?"#f0fdf4":"#fff7ed"}}/>
-            </td>
-            <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0",textAlign:"center",fontWeight:600,color:diff===null?"#94a3b8":diff>0?"#16a34a":diff<0?"#dc2626":"#64748b"}}>
-              {diff===null?"—":diff>0?`+${diff}`:diff}
-            </td>
-            <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0",textAlign:"center"}}>
-              {qty===null||qty===undefined
-                ?<span style={{color:"#94a3b8",fontSize:12}}>待录入</span>
-                :matched
-                  ?<span style={{background:"#dcfce7",color:"#16a34a",padding:"2px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>✓ 达标</span>
-                  :<span style={{background:"#fee2e2",color:"#dc2626",padding:"2px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>⚠ 不足</span>}
-            </td>
-          </tr>
-        );
-      })}</tbody>
-    </table>
-  </div>
-);
+// ─── UI: DeliveryTable ────────────────────────────────────────────────────────
+const DeliveryTable = ({ items, contractQty, onChangeInput, onBlurQty }) => {
+  const qtys = items.map(it => toNumber(it.delivered_qty, 0));
+  const minQty = qtys.length ? Math.min(...qtys) : 0;
+  return (
+    <div style={{overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+        <thead><tr style={{background:"#1e293b",color:"#fff"}}>
+          {["物料名称","规格","颜色","实送数量","状态"].map(h=>(
+            <th key={h} style={{padding:"10px 12px",fontWeight:600,whiteSpace:"nowrap"}}>{h}</th>
+          ))}
+        </tr></thead>
+        <tbody>{items.map((item,i)=>{
+          const qty = toNumber(item.delivered_qty, 0);
+          const isMin = qty === minQty && qtys.filter(q=>q===minQty).length >= 1;
+          const ok = qty >= contractQty;
+          return (
+            <tr key={i} style={{background:i%2?"#f8fafc":"#fff"}}>
+              <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0",fontWeight:500}}>{item.name}</td>
+              <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0",fontSize:11,color:"#64748b"}}>{item.spec}</td>
+              <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0"}}>{item.color||""}</td>
+              <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0",textAlign:"center"}}>
+                <input type="number" min="0" value={item.delivered_qty_input??""}
+                  onChange={e=>onChangeInput(i,e.target.value)} onBlur={()=>onBlurQty(i)}
+                  style={{width:90,textAlign:"center",padding:"4px 8px",borderRadius:6,fontSize:13,outline:"none",fontWeight:isMin?"700":"400",
+                    border:ok?"1px solid #22c55e":"1px solid #f97316",
+                    background:ok?"#f0fdf4":"#fff7ed"}}/>
+                {isMin && <span style={{marginLeft:6,fontSize:11,color:"#f97316",fontWeight:600}}>最小值</span>}
+              </td>
+              <td style={{padding:"8px 12px",borderBottom:"1px solid #e2e8f0",textAlign:"center"}}>
+                {ok
+                  ? <span style={{background:"#dcfce7",color:"#16a34a",padding:"2px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>✓ 达标</span>
+                  : <span style={{background:"#fee2e2",color:"#dc2626",padding:"2px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>⚠ 不足</span>}
+              </td>
+            </tr>
+          );
+        })}</tbody>
+      </table>
+    </div>
+  );
+};
 
 // ─── UI: HistoryPage ───────────────────────────────────────────────────────────
 const HistoryPage = ({ onBack }) => {
@@ -421,7 +408,6 @@ export default function App() {
   const [deliveryFile, setDeliveryFile] = useState(null);
   const [contract, setContract] = useState(null);
   const [items, setItems] = useState([]);
-  const [settlementMode, setSettlementMode] = useState("contract");
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [error, setError] = useState("");
@@ -482,13 +468,11 @@ export default function App() {
       const content = isPdf
         ? [{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}]
         : [{type:"image",source:{type:"base64",media_type:mime,data:b64}}];
-      content.push({type:"text",text:`请从这份采购合同中提取以下信息，只返回 JSON：{"contract_no":"","contract_date":"YYYY-MM-DD","seller":"","seller_contact":"","buyer":"","buyer_contact":"","product_name":"","contract_qty":0,"unit_price":0,"trade_mode":"","amount_cn":"","items":[{"name":"","spec":"","color":"","unit":"","contract_qty":0}]}`});
+      content.push({type:"text",text:`请从这份采购合同中提取以下信息，只返回 JSON：{"contract_no":"","contract_date":"YYYY-MM-DD","seller":"","seller_contact":"","buyer":"","buyer_contact":"","product_name":"","contract_qty":0,"unit_price":0,"trade_mode":"","amount_cn":""}`});
       const raw = await callClaude([{role:"user",content}], "你是专业的采购文件解析助手，只返回纯 JSON，不要 markdown，不要解释。");
       const normalized = normalizeContract(raw);
       setContract(normalized);
-      const baseItems = (normalized.items.length>0 ? normalized.items : [{name:normalized.product_name,spec:"",color:"白色",unit:"套",contract_qty:normalized.contract_qty}])
-        .map(it=>({...it, delivered_qty:null, delivered_qty_input:"", note:""}));
-      setItems(baseItems);
+      setItems([]); // 清空，等送货单填充
       setStep(1);
     } catch(e) { setError("合同解析失败："+e.message); }
     setLoading(false);
@@ -505,18 +489,17 @@ export default function App() {
       const content = isPdf
         ? [{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}]
         : [{type:"image",source:{type:"base64",media_type:mime,data:b64}}];
-      const itemNames = items.map(it=>it.name).join("、");
-      content.push({type:"text",text:`请从这份送货单中提取实际送货数量，对应物料：${itemNames}。只返回JSON：{"delivery_no":"","delivery_date":"","items":[{"name":"","spec":"","color":"","delivered_qty":0,"note":""}]}`});
-      const raw = await callClaude([{role:"user",content}], "你是专业的仓储送货单解析助手，只返回纯 JSON。");
-      const deliveryItems = raw.items || [];
-      setItems(prev => prev.map(it => {
-        const match = findBestMatch(it, deliveryItems);
-        return {...it,
-          delivered_qty: match?.delivered_qty ?? it.delivered_qty,
-          delivered_qty_input: match?.delivered_qty!=null ? String(match.delivered_qty) : (it.delivered_qty_input ?? ""),
-          note: match?.note || it.note
-        };
+      content.push({type:"text",text:`提取送货单中每一行物料的名称、颜色、规格和数量。数量栏只取最终数字，忽略算式。只返回JSON：{"delivery_no":"","delivery_date":"","items":[{"name":"","spec":"","color":"","delivered_qty":数字}]}`});
+      const raw = await callClaude([{role:"user",content}], "你是仓储单据解析助手。只输出纯JSON，不要markdown代码块，不要任何解释，直接以{开头以}结尾。", 2000);
+      const deliveryItems = (raw.items || []).map(it=>({
+        name: String(it.name||"").trim(),
+        spec: String(it.spec||"").trim(),
+        color: String(it.color||"").trim(),
+        delivered_qty: toNumber(it.delivered_qty, 0),
+        delivered_qty_input: String(toNumber(it.delivered_qty, 0)),
+        note: "",
       }));
+      setItems(deliveryItems);
       if (raw.delivery_no) setContract(c=>({...c, delivery_no: raw.delivery_no}));
       setStep(2);
     } catch(e) { setError("送货单解析失败："+e.message); }
@@ -526,19 +509,18 @@ export default function App() {
   // ── 生成 Excel + 保存 ──
   const doGenerate = async () => {
     const committed = items.map(it => {
-      if (it.delivered_qty !== null && it.delivered_qty !== undefined) return it;
       const raw = String(it.delivered_qty_input ?? "").trim();
-      const n = raw==="" ? null : Number(raw);
-      return {...it, delivered_qty: Number.isFinite(n) ? n : null};
+      const n = raw==="" ? 0 : Number(raw);
+      return {...it, delivered_qty: Number.isFinite(n) ? n : 0};
     });
-    const settlement = calcSettlement(contract, committed, settlementMode);
-    const contractWithMode = {...contract, settlement_mode: settlementMode};
-    generateExcel(contractWithMode, committed, settlement);
-    clearDraft(contract.contract_no); // 导出成功，清除该合同草稿
+    const s = calcSettlement(contract, committed);
+    const contractWithMode = {...contract, settlement_mode: "actual"};
+    generateExcel(contractWithMode, committed, s);
+    clearDraft(contract.contract_no);
     setDrafts(loadAllDrafts());
     try {
       setSaveMsg("正在保存记录…");
-      await saveStatement(contractWithMode, committed, settlement);
+      await saveStatement(contractWithMode, committed, s);
       setSaveMsg("✅ 已保存到历史记录，草稿已清除");
       setTimeout(()=>setSaveMsg(""), 4000);
     } catch(e) { setSaveMsg("⚠ 导出成功，但保存记录失败："+e.message); }
@@ -548,11 +530,12 @@ export default function App() {
     if (contract?.contract_no) clearDraft(contract.contract_no);
     setDrafts(loadAllDrafts());
     setStep(0); setContract(null); setItems([]); setContractFile(null);
-    setDeliveryFile(null); setError(""); setSaveMsg(""); setSettlementMode("contract");
+    setDeliveryFile(null); setError(""); setSaveMsg("");
   };
 
-  const allMatched = items.length>0 && items.every(it=>toNumber(it.delivered_qty,0)>=it.contract_qty);
-  const anyShort = items.some(it=>{ const q=it.delivered_qty; return q===null||q===undefined||toNumber(q,0)<it.contract_qty; });
+  const settlement = contract && items.length > 0 ? calcSettlement(contract, items) : null;
+  const canGenerate = settlement?.canSettle ?? false;
+
 
   return (
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#f0f4f8,#e8edf2)",fontFamily:"'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif",padding:"32px 16px"}}>
@@ -691,45 +674,60 @@ export default function App() {
                         </button>
                       </div>
 
-                      {/* 状态提示 */}
-                      <div style={{padding:"10px 16px",borderRadius:8,marginBottom:16,fontSize:13,fontWeight:600,
-                        background:allMatched?"#dcfce7":"#fff7ed",
-                        color:allMatched?"#15803d":"#c2410c",
-                        border:`1px solid ${allMatched?"#86efac":"#fdba74"}`}}>
-                        {allMatched?"✅ 所有物料数量已达标，可生成对账单"
-                          :`⚠️ 还有 ${items.filter(it=>toNumber(it.delivered_qty,0)<it.contract_qty).length} 项数量不足，可手动修改后继续`}
-                      </div>
-
-                      <CompareTable items={items} onChangeInput={updateQtyInput} onBlurQty={commitQtyInput}/>
-
-                      {/* 结算方式 */}
-                      <div style={{marginTop:18,padding:"14px 16px",background:"#f8fafc",borderRadius:10,border:"1px solid #e2e8f0"}}>
-                        <div style={{fontSize:13,fontWeight:700,color:"#1e293b",marginBottom:10}}>结算方式</div>
-                        <div style={{display:"flex",gap:12}}>
-                          {[["contract","按合同数量结算",`¥${(contract.contract_qty*contract.unit_price).toFixed(2)}`],
-                            ["actual","按实际最小送货量结算",`¥${(Math.min(...items.map(it=>toNumber(it.delivered_qty,0)).filter(n=>n>0),contract.contract_qty)*contract.unit_price).toFixed(2)}`]
-                          ].map(([mode,label,amt])=>(
-                            <div key={mode} onClick={()=>setSettlementMode(mode)}
-                              style={{flex:1,padding:"10px 14px",borderRadius:8,cursor:"pointer",transition:"all .2s",
-                                border:settlementMode===mode?"2px solid #1e293b":"2px solid #e2e8f0",
-                                background:settlementMode===mode?"#f0f4f8":"#fff"}}>
-                              <div style={{fontWeight:600,fontSize:13,color:"#1e293b",marginBottom:4}}>{label}</div>
-                              <div style={{fontSize:13,color:"#dc2626",fontWeight:700}}>{amt}</div>
+                      {/* 结算摘要 */}
+                      {settlement && (
+                        <div style={{padding:"12px 16px",borderRadius:10,marginBottom:16,
+                          background:canGenerate?"#dcfce7":"#fff7ed",
+                          border:`1px solid ${canGenerate?"#86efac":"#fdba74"}`}}>
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                            <div>
+                              <span style={{fontSize:13,fontWeight:700,color:canGenerate?"#15803d":"#c2410c"}}>
+                                {canGenerate?"✅ 送货数量达标，可生成对账单":"⚠️ 最小送货量不足，请确认后再生成"}
+                              </span>
+                              <div style={{fontSize:12,color:"#64748b",marginTop:4}}>
+                                合同数量 <b>{contract.contract_qty}</b> 套 · 送货最小值 <b style={{color:canGenerate?"#16a34a":"#dc2626"}}>{settlement.minQty}</b> 件 · 结算数量 <b>{settlement.settleQty}</b> 套
+                              </div>
                             </div>
-                          ))}
+                            <div style={{fontSize:18,fontWeight:700,color:"#dc2626"}}>
+                              ¥{settlement.totalAmt.toLocaleString("zh-CN",{minimumFractionDigits:2})}
+                            </div>
+                          </div>
                         </div>
-                      </div>
+                      )}
+
+                      <DeliveryTable items={items} contractQty={contract.contract_qty} onChangeInput={updateQtyInput} onBlurQty={commitQtyInput}/>
 
                       {error&&<div style={{color:"#dc2626",fontSize:13,marginTop:12,padding:"8px 12px",background:"#fef2f2",borderRadius:8}}>{error}</div>}
                       {saveMsg&&<div style={{fontSize:13,marginTop:12,padding:"8px 12px",background:"#f0fdf4",borderRadius:8,color:"#16a34a"}}>{saveMsg}</div>}
 
-                      <button onClick={doGenerate}
-                        style={{marginTop:20,width:"100%",padding:"16px 0",borderRadius:10,fontWeight:700,fontSize:16,border:"none",cursor:"pointer",letterSpacing:2,color:"#fff",
-                          background:"linear-gradient(135deg,#16a34a,#15803d)",boxShadow:"0 4px 12px rgba(22,163,74,.3)"}}>
-                        📥 生成并下载对账单 Excel
-                      </button>
-
-                      {anyShort&&<p style={{textAlign:"center",fontSize:12,color:"#f97316",marginTop:8,margin:"8px 0 0"}}>部分数量不足，仍可导出 — 将以当前填写数量生成</p>}
+                      {canGenerate ? (
+                        <div style={{marginTop:20,padding:"16px",background:"#f0fdf4",borderRadius:12,border:"1px solid #86efac"}}>
+                          <div style={{fontSize:14,fontWeight:700,color:"#15803d",marginBottom:12,textAlign:"center"}}>
+                            ✅ 送货数量已达标，是否现在生成对账单？
+                          </div>
+                          <div style={{display:"flex",gap:12}}>
+                            <button onClick={doGenerate}
+                              style={{flex:1,padding:"14px 0",borderRadius:10,fontWeight:700,fontSize:15,border:"none",cursor:"pointer",color:"#fff",
+                                background:"linear-gradient(135deg,#16a34a,#15803d)",boxShadow:"0 4px 12px rgba(22,163,74,.3)"}}>
+                              📥 立即生成
+                            </button>
+                            <button onClick={()=>{}}
+                              style={{flex:1,padding:"14px 0",borderRadius:10,fontWeight:600,fontSize:15,border:"1px solid #86efac",cursor:"pointer",color:"#15803d",background:"#fff"}}>
+                              ✏️ 继续修改数量
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{marginTop:20,display:"flex",flexDirection:"column",gap:10}}>
+                          <div style={{padding:"12px 16px",background:"#fff7ed",borderRadius:10,fontSize:13,color:"#c2410c",textAlign:"center",border:"1px solid #fdba74"}}>
+                            送货最小值（{settlement?.minQty??0}）低于合同数量（{contract.contract_qty}），请确认数量后再生成
+                          </div>
+                          <button onClick={doGenerate}
+                            style={{width:"100%",padding:"12px 0",borderRadius:10,fontWeight:600,fontSize:14,border:"1px solid #fdba74",cursor:"pointer",color:"#c2410c",background:"#fff7ed"}}>
+                            仍要生成对账单（按实际数量）
+                          </button>
+                        </div>
+                      )}
 
                       <button onClick={resetAll}
                         style={{marginTop:12,width:"100%",padding:"10px 0",borderRadius:10,fontWeight:600,fontSize:14,border:"1px solid #e2e8f0",cursor:"pointer",color:"#64748b",background:"#f8fafc"}}>
