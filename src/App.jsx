@@ -11,11 +11,11 @@ const loadAllDrafts = () => {
   catch { return {}; }
 };
 
-const saveDraft = (step, contract, items, settlementMode) => {
+const saveDraft = (step, contract, items) => {
   if (!contract?.contract_no) return;
   try {
     const all = loadAllDrafts();
-    all[contract.contract_no] = { step, contract, items, settlementMode, savedAt: new Date().toISOString() };
+    all[contract.contract_no] = { step, contract, items, savedAt: new Date().toISOString() };
     localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
   } catch {}
 };
@@ -423,16 +423,15 @@ export default function App() {
   // ── 自动保存草稿 ──
   useEffect(() => {
     if (step >= 1 && contract?.contract_no) {
-      saveDraft(step, contract, items, settlementMode);
+      saveDraft(step, contract, items);
       setDrafts(loadAllDrafts());
     }
-  }, [step, contract, items, settlementMode]);
+  }, [step, contract, items]);
 
   const resumeDraft = (draft) => {
     setStep(draft.step);
     setContract(draft.contract);
     setItems(draft.items);
-    setSettlementMode(draft.settlementMode || "contract");
     setShowDraftPanel(false);
     setPage("main");
   };
