@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import * as XLSX from "xlsx";
 
-const SUPABASE_URL = "https://jzcgedxiaqndsoprziqx.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp6Y2dlZHhpYXFuZHNvcHJ6aXF4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzNTY5MjksImV4cCI6MjA4ODkzMjkyOX0.55lSbLC63mMKBohVwWmwBhqE-WjlDUTJjz-Fgl7O5mY";
+const SUPABASE_URL = "https://hrlxpveadoxnzqnjsxpl.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhybHhwdmVhZG94bnpxbmpzeHBsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5NTE0NjgsImV4cCI6MjA5ODUyNzQ2OH0.jfkX62RTrvSe6XNiqB_A3DmEIox6PgJNS4MYVDHVp28";
 const DRAFTS_KEY = "yflcs_drafts";
 
 // ─── 多草稿（本地存储）────────────────────────────────────────────────────────
@@ -80,6 +80,35 @@ const fetchStatements = async (search = "") => {
 const deleteStatement = async (id) => {
   const res = await sbFetch(`/statements?id=eq.${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error("删除失败");
+};
+
+// ─── 客户资料 Supabase ───────────────────────────────────────────────────────
+const fetchCustomers = async () => {
+  const res = await sbFetch("/customers?order=company_name.asc");
+  if (!res.ok) throw new Error("获取客户失败");
+  return res.json();
+};
+
+const saveCustomer = async (data) => {
+  const res = await sbFetch("/customers", { method: "POST", body: JSON.stringify(data) });
+  if (!res.ok) throw new Error("保存客户失败");
+  return res.json();
+};
+
+const updateCustomer = async (id, data) => {
+  const res = await sbFetch(`/customers?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(data) });
+  if (!res.ok) throw new Error("更新客户失败");
+};
+
+const deleteCustomer = async (id) => {
+  const res = await sbFetch(`/customers?id=eq.${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("删除客户失败");
+};
+
+const matchCustomer = (buyerName, customers) => {
+  if (!buyerName || !customers.length) return null;
+  const n = (s) => String(s).replace(/\s/g,"").toLowerCase();
+  return customers.find(c => n(buyerName).includes(n(c.company_name)) || n(c.company_name).includes(n(buyerName))) || null;
 };
 
 // ─── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -213,7 +242,7 @@ const generateExcel = (contract, items, settlement) => {
   ws["!rows"]=Array(totalRows).fill({hpt:20});
   ws["!ref"]=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:totalRows,c:9}});
   XLSX.utils.book_append_sheet(wb,ws,"对账单");
-  XLSX.writeFile(wb,`对账单_${contract.contract_no}_${formatLocalDate()}.xlsx`,{cellStyles:true,compression:true});
+  XLSX.writeFile(wb,`对账单_${contract.buyer||"客户"}_${new Date().getFullYear()}年${new Date().getMonth()+1}月_${contract.contract_no}.xlsx`,{cellStyles:true,compression:true});
 };
 
 // ─── UI: UploadBox ─────────────────────────────────────────────────────────────
@@ -288,6 +317,115 @@ const DeliveryTable = ({ items, contractQty, onChangeInput, onBlurQty }) => {
           );
         })}</tbody>
       </table>
+    </div>
+  );
+};
+
+// ─── UI: CustomerPage ─────────────────────────────────────────────────────────
+const CustomerPage = ({ customers, onRefresh, onBack }) => {
+  const [editing, setEditing] = useState(null); // null | 'new' | customer object
+  const [form, setForm] = useState({ company_name:"", contact_person:"", phone:"", address:"", products:"" });
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const openNew = () => { setForm({company_name:"",contact_person:"",phone:"",address:"",products:""}); setEditing("new"); };
+  const openEdit = (c) => { setForm({...c, products: Array.isArray(c.products)?c.products.map(p=>`${p.name} ¥${p.price}`).join("\n"):""}); setEditing(c); };
+
+  const handleSave = async () => {
+    if (!form.company_name.trim()) { setMsg("公司名称不能为空"); return; }
+    setSaving(true);
+    try {
+      const products = form.products.trim().split("\n").filter(Boolean).map(line => {
+        const m = line.match(/^(.+?)\s*¥([\d.]+)$/);
+        return m ? { name: m[1].trim(), price: parseFloat(m[2]) } : { name: line.trim(), price: 0 };
+      });
+      const data = { company_name: form.company_name.trim(), contact_person: form.contact_person.trim(), phone: form.phone.trim(), address: form.address.trim(), products };
+      if (editing === "new") { await saveCustomer(data); }
+      else { await updateCustomer(editing.id, data); }
+      setMsg("✅ 保存成功");
+      setEditing(null);
+      onRefresh();
+    } catch(e) { setMsg("❌ "+e.message); }
+    setSaving(false);
+    setTimeout(()=>setMsg(""), 3000);
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm("确定删除该客户？")) return;
+    await deleteCustomer(id);
+    onRefresh();
+  };
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <h3 style={{margin:0,fontSize:16,fontWeight:700,color:"#1e293b"}}>👥 客户资料</h3>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={openNew} style={{padding:"6px 16px",background:"#1e293b",color:"#fff",border:"none",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer"}}>+ 新增客户</button>
+          <button onClick={onBack} style={{padding:"6px 16px",background:"#f1f5f9",color:"#1e293b",border:"none",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer"}}>← 返回</button>
+        </div>
+      </div>
+
+      {msg && <div style={{marginBottom:12,padding:"8px 12px",borderRadius:8,background:"#f0fdf4",color:"#16a34a",fontSize:13}}>{msg}</div>}
+
+      {/* 编辑表单 */}
+      {editing && (
+        <div style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:12,padding:20,marginBottom:20}}>
+          <h4 style={{margin:"0 0 14px",fontSize:14,color:"#1e293b"}}>{editing==="new"?"新增客户":"编辑客户"}</h4>
+          {[["公司名称 *","company_name"],["联系人","contact_person"],["电话","phone"],["地址","address"]].map(([label,key])=>(
+            <div key={key} style={{marginBottom:10}}>
+              <div style={{fontSize:12,color:"#64748b",marginBottom:4}}>{label}</div>
+              <input value={form[key]} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))}
+                style={{width:"100%",padding:"8px 10px",border:"1px solid #e2e8f0",borderRadius:8,fontSize:13,outline:"none",boxSizing:"border-box"}}/>
+            </div>
+          ))}
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:12,color:"#64748b",marginBottom:4}}>常用产品及单价（每行一条，格式：产品名称 ¥单价）</div>
+            <textarea value={form.products} onChange={e=>setForm(f=>({...f,products:e.target.value}))} rows={4}
+              placeholder={"风扇壳料整套 ¥1.48\n充电器外壳 ¥2.50"}
+              style={{width:"100%",padding:"8px 10px",border:"1px solid #e2e8f0",borderRadius:8,fontSize:12,outline:"none",boxSizing:"border-box",resize:"vertical"}}/>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={handleSave} disabled={saving}
+              style={{padding:"8px 20px",background:"#1e293b",color:"#fff",border:"none",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer"}}>
+              {saving?"保存中…":"保存"}
+            </button>
+            <button onClick={()=>setEditing(null)} style={{padding:"8px 16px",background:"#f1f5f9",color:"#64748b",border:"none",borderRadius:8,fontSize:13,cursor:"pointer"}}>取消</button>
+          </div>
+        </div>
+      )}
+
+      {/* 客户列表 */}
+      {customers.length === 0
+        ? <div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>暂无客户资料，点击"新增客户"添加</div>
+        : customers.map(c=>(
+          <div key={c.id} style={{border:"1px solid #e2e8f0",borderRadius:10,padding:"14px 16px",marginBottom:10,background:"#fff"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:700,color:"#1e293b",marginBottom:4}}>{c.company_name}</div>
+                <div style={{fontSize:12,color:"#64748b",display:"flex",gap:16,flexWrap:"wrap"}}>
+                  {c.contact_person && <span>👤 {c.contact_person}</span>}
+                  {c.phone && <span>📞 {c.phone}</span>}
+                  {c.address && <span>📍 {c.address}</span>}
+                </div>
+                {Array.isArray(c.products) && c.products.length > 0 && (
+                  <div style={{marginTop:8,display:"flex",gap:6,flexWrap:"wrap"}}>
+                    {c.products.map((p,i)=>(
+                      <span key={i} style={{background:"#f1f5f9",padding:"2px 10px",borderRadius:20,fontSize:11,color:"#475569"}}>
+                        {p.name} ¥{p.price}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div style={{display:"flex",gap:8,flexShrink:0}}>
+                <button onClick={()=>openEdit(c)} style={{padding:"4px 12px",background:"#f1f5f9",border:"none",borderRadius:6,fontSize:12,cursor:"pointer",color:"#1e293b"}}>编辑</button>
+                <button onClick={()=>handleDelete(c.id)} style={{padding:"4px 12px",background:"#fee2e2",border:"none",borderRadius:6,fontSize:12,cursor:"pointer",color:"#dc2626"}}>删除</button>
+              </div>
+            </div>
+          </div>
+        ))
+      }
     </div>
   );
 };
@@ -415,10 +553,13 @@ export default function App() {
   const [drafts, setDrafts] = useState({}); // 所有草稿
   const [showDraftPanel, setShowDraftPanel] = useState(false);
   const [settlementMode, setSettlementMode] = useState("contract");
+  const [customers, setCustomers] = useState([]);
+  const [matchedCustomer, setMatchedCustomer] = useState(null);
 
-  // ── 启动时加载所有草稿 ──
+  // ── 启动时加载所有草稿 + 客户 ──
   useEffect(() => {
     setDrafts(loadAllDrafts());
+    fetchCustomers().then(setCustomers).catch(()=>{});
   }, []);
 
   // ── 自动保存草稿 ──
@@ -426,6 +567,7 @@ export default function App() {
     if (step >= 1 && contract?.contract_no) {
       saveDraft(step, contract, items);
       setDrafts(loadAllDrafts());
+    fetchCustomers().then(setCustomers).catch(()=>{});
     }
   }, [step, contract, items]);
 
@@ -440,6 +582,7 @@ export default function App() {
   const deleteDraft = (contractNo) => {
     clearDraft(contractNo);
     setDrafts(loadAllDrafts());
+    fetchCustomers().then(setCustomers).catch(()=>{});
     // 如果删的是当前编辑中的草稿，重置
     if (contract?.contract_no === contractNo) resetAll();
   };
@@ -473,6 +616,7 @@ export default function App() {
       const normalized = normalizeContract(raw);
       setContract(normalized);
       setItems([]); // 清空，等送货单填充
+      const mc = matchCustomer(normalized.buyer, customers); setMatchedCustomer(mc || null);
       setStep(1);
     } catch(e) { setError("合同解析失败："+e.message); }
     setLoading(false);
@@ -518,6 +662,7 @@ export default function App() {
     generateExcel(contractWithMode, committed, s);
     clearDraft(contract.contract_no);
     setDrafts(loadAllDrafts());
+    fetchCustomers().then(setCustomers).catch(()=>{});
     try {
       setSaveMsg("正在保存记录…");
       await saveStatement(contractWithMode, committed, s);
@@ -529,6 +674,7 @@ export default function App() {
   const resetAll = () => {
     if (contract?.contract_no) clearDraft(contract.contract_no);
     setDrafts(loadAllDrafts());
+    fetchCustomers().then(setCustomers).catch(()=>{});
     setStep(0); setContract(null); setItems([]); setContractFile(null);
     setDeliveryFile(null); setError(""); setSaveMsg("");
   };
@@ -600,12 +746,19 @@ export default function App() {
             style={{padding:"6px 16px",borderRadius:20,border:"none",fontSize:13,fontWeight:600,cursor:"pointer",background:page==="history"?"#1e293b":"#e2e8f0",color:page==="history"?"#fff":"#64748b"}}>
             📚 历史记录
           </button>
+          <button onClick={()=>{setPage("customers");fetchCustomers().then(setCustomers).catch(()=>{});}}
+            style={{padding:"6px 16px",borderRadius:20,border:"none",fontSize:13,fontWeight:600,cursor:"pointer",background:page==="customers"?"#1e293b":"#e2e8f0",color:page==="customers"?"#fff":"#64748b"}}>
+            👥 客户资料
+          </button>
         </div>
 
         <div style={{background:"#fff",borderRadius:16,padding:28,boxShadow:"0 4px 24px rgba(0,0,0,.07)"}}>
 
           {/* 历史记录 */}
           {page==="history" && <HistoryPage onBack={()=>setPage("main")}/>}
+
+          {/* 客户资料 */}
+          {page==="customers" && <CustomerPage customers={customers} onRefresh={()=>fetchCustomers().then(setCustomers).catch(()=>{})} onBack={()=>setPage("main")}/>}
 
           {/* 主流程 */}
           {page==="main" && (
@@ -646,6 +799,23 @@ export default function App() {
                       ))}
                     </div>
                   </div>
+
+                  {/* 匹配客户提示 */}
+                  {matchedCustomer && (
+                    <div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,padding:"10px 14px",marginBottom:14,fontSize:13}}>
+                      <span style={{fontWeight:700,color:"#1d4ed8"}}>👥 已匹配客户：</span>
+                      <span style={{color:"#1e293b",marginLeft:6}}>{matchedCustomer.company_name}</span>
+                      {matchedCustomer.contact_person && <span style={{color:"#64748b",marginLeft:10}}>联系人：{matchedCustomer.contact_person}</span>}
+                      {matchedCustomer.phone && <span style={{color:"#64748b",marginLeft:10}}>📞 {matchedCustomer.phone}</span>}
+                      {Array.isArray(matchedCustomer.products) && matchedCustomer.products.length>0 && (
+                        <div style={{marginTop:6,display:"flex",gap:6,flexWrap:"wrap"}}>
+                          {matchedCustomer.products.map((p,i)=>(
+                            <span key={i} style={{background:"#dbeafe",padding:"2px 8px",borderRadius:12,fontSize:11,color:"#1d4ed8"}}>{p.name} ¥{p.price}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* STEP 1: 上传送货单 */}
                   {step===1 && (
