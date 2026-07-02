@@ -704,8 +704,8 @@ export default function App() {
       const content = isPdf
         ? [{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}]
         : [{type:"image",source:{type:"base64",media_type:mime,data:b64}}];
-      content.push({type:"text",text:`请从这份采购合同中提取以下信息，只返回 JSON：{"contract_no":"","contract_date":"YYYY-MM-DD","seller":"","seller_contact":"","buyer":"","buyer_contact":"","product_name":"","contract_qty":0,"unit_price":0,"trade_mode":"","amount_cn":""}`});
-      const raw = await callClaude([{role:"user",content}], "你是专业的采购文件解析助手，只返回纯 JSON，不要 markdown，不要解释。");
+      content.push({type:"text",text:`从这份采购合同提取信息。只输出一个JSON对象，不要任何解释、不要markdown代码块，直接以{开头以}结尾：{"contract_no":"","contract_date":"YYYY-MM-DD","seller":"","seller_contact":"","buyer":"","buyer_contact":"","product_name":"","contract_qty":0,"unit_price":0,"trade_mode":"","amount_cn":""}`});
+      const raw = await callClaude([{role:"user",content}], "你是采购文件解析助手。严格只输出纯JSON，绝对不要输出任何其他文字、解释或markdown格式，第一个字符必须是{，最后一个字符必须是}。");
       const normalized = normalizeContract(raw);
       setContract(normalized);
       setItems([]); // 清空，等送货单填充
