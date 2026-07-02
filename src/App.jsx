@@ -563,7 +563,7 @@ export default function App() {
   const [page, setPage] = useState("main");
   const [step, setStep] = useState(0);
   const [contractFile, setContractFile] = useState(null);
-  const [deliveryFile, setDeliveryFile] = useState(null);
+  const [deliveryFiles, setDeliveryFiles] = useState([]); // multiple delivery notes
   const [contract, setContract] = useState(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -715,31 +715,39 @@ export default function App() {
     setLoading(false);
   };
 
-  // ── 解析送货单 ──
+  // ── 解析送货单（支持多张）──
   const parseDelivery = async () => {
-    if (!deliveryFile) return;
-    setLoading(true); setLoadingMsg("AI 正在识别送货单…"); setError("");
+    if (!deliveryFiles.length) return;
+    setLoading(true); setError("");
     try {
-      const b64 = await toBase64(deliveryFile);
-      const mime = deliveryFile.type || "image/jpeg";
-      const isPdf = mime === "application/pdf";
-      const content = isPdf
-        ? [{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}]
-        : [{type:"image",source:{type:"base64",media_type:mime,data:b64}}];
-      content.push({type:"text",text:`提取送货单中每一行物料的名称、颜色、规格和数量。数量栏只取最终数字，忽略算式。只返回JSON：{"delivery_no":"","delivery_date":"","items":[{"name":"","spec":"","color":"","delivered_qty":数字}]}`});
-      const raw = await callClaude([{role:"user",content}], "你是仓储单据解析助手。只输出纯JSON，不要markdown代码块，不要任何解释，直接以{开头以}结尾。", 2000);
-      const deliveryItems = (raw.items || []).map(it=>({
-        name: String(it.name||"").trim(),
-        spec: String(it.spec||"").trim(),
-        color: String(it.color||"白色").trim(),
-        unit: String(it.unit || "件").trim(),
-        contract_qty: toNumber(it.contract_qty, contract?.contract_qty || 0),
-        delivered_qty: toNumber(it.delivered_qty, 0),
-        delivered_qty_input: String(toNumber(it.delivered_qty, 0)),
-        note: "",
-      }));
-      setItems(deliveryItems);
-      if (raw.delivery_no) setContract(c=>({...c, delivery_no: raw.delivery_no}));
+      let allItems = [];
+      let allNos = [];
+      for (let i = 0; i < deliveryFiles.length; i++) {
+        const file = deliveryFiles[i];
+        setLoadingMsg(`AI 正在识别第 ${i+1}/${deliveryFiles.length} 张送货单…`);
+        const b64 = await toBase64(file);
+        const mime = file.type || "image/jpeg";
+        const isPdf = mime === "application/pdf";
+        const msgContent = isPdf
+          ? [{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}]
+          : [{type:"image",source:{type:"base64",media_type:mime,data:b64}}];
+        msgContent.push({type:"text",text:`提取送货单中每一行物料的名称、颜色、规格和数量。数量栏只取最终数字，忽略算式。只输出一个JSON对象，不要任何解释、不要markdown代码块，直接以{开头以}结尾：{"delivery_no":"","delivery_date":"","items":[{"name":"","spec":"","color":"","delivered_qty":数字}]}`});
+        const raw = await callClaude([{role:"user",content:msgContent}], "你是仓储单据解析助手。只输出纯JSON，不要markdown代码块，不要任何解释，直接以{开头以}结尾。", 2000);
+        const parsed = (raw.items || []).map(it=>({
+          name: String(it.name||"").trim(),
+          spec: String(it.spec||"").trim(),
+          color: String(it.color||"白色").trim(),
+          unit: String(it.unit||"件").trim(),
+          contract_qty: toNumber(it.contract_qty, contract?.contract_qty || 0),
+          delivered_qty: toNumber(it.delivered_qty, 0),
+          delivered_qty_input: String(toNumber(it.delivered_qty, 0)),
+          note: raw.delivery_no||"",
+        }));
+        allItems = [...allItems, ...parsed];
+        if (raw.delivery_no) allNos.push(raw.delivery_no);
+      }
+      setItems(allItems);
+      if (allNos.length) setContract(c=>({...c, delivery_no: allNos.join(" / ")}));
       setStep(2);
     } catch(e) { setError("送货单解析失败："+e.message); }
     setLoading(false);
@@ -771,7 +779,7 @@ export default function App() {
     setDrafts(loadAllDrafts());
     fetchCustomers().then(setCustomers).catch(()=>{});
     setStep(0); setContract(null); setItems([]); setContractFile(null);
-    setDeliveryFile(null); setError(""); setSaveMsg(""); setInputMode("upload");
+    setDeliveryFiles([]); setError(""); setSaveMsg(""); setInputMode("upload");
     setManualForm({contract_no:"",contract_date:"",buyer:"",seller:"深圳市源丰隆实业有限公司",seller_contact:"梁生",buyer_contact:"",product_name:"",contract_qty:"",unit_price:"",trade_mode:"含增值税13%",amount_cn:"",delivery_no:""});
     setManualItems([{name:"",spec:"",color:"白色",unit:"件",contract_qty:"",delivered_qty:"",note:""}]);
     setMatchedCustomer(null);
@@ -994,14 +1002,34 @@ export default function App() {
                     ) : (
                       <>
                         <h3 style={{margin:"0 0 16px",fontSize:16,color:"#1e293b",fontWeight:700}}>第二步：上传送货单</h3>
-                        <UploadBox label="上传送货单 / 工单图片或 PDF" onFile={setDeliveryFile} file={deliveryFile}/>
+                        <div
+                          onClick={()=>{const inp=document.createElement("input");inp.type="file";inp.accept="image/*,.pdf,application/pdf";inp.multiple=true;inp.onchange=e=>{const fs=Array.from(e.target.files);if(fs.length)setDeliveryFiles(prev=>[...prev,...fs]);};inp.click();}}
+                          onDrop={e=>{e.preventDefault();const fs=Array.from(e.dataTransfer.files);if(fs.length)setDeliveryFiles(prev=>[...prev,...fs]);}}
+                          onDragOver={e=>e.preventDefault()}
+                          style={{border:"2px dashed #475569",borderRadius:12,padding:"24px 20px",textAlign:"center",cursor:"pointer",background:"#f8fafc",minHeight:90,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6}}>
+                          <span style={{fontSize:28}}>📄</span>
+                          <span style={{fontSize:13,color:"#64748b",fontWeight:600}}>点击或拖拽上传送货单（可多张）</span>
+                          <span style={{fontSize:11,color:"#94a3b8"}}>支持 JPG/PNG/PDF，可同时选多个文件</span>
+                        </div>
+                        {deliveryFiles.length>0 && (
+                          <div style={{marginTop:10,display:"flex",flexDirection:"column",gap:6}}>
+                            {deliveryFiles.map((f,i)=>(
+                              <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 12px",background:"#f0fdf4",borderRadius:8,border:"1px solid #86efac"}}>
+                                <span style={{fontSize:12,color:"#16a34a",fontWeight:600}}>✅ {f.name}</span>
+                                <button onClick={()=>setDeliveryFiles(prev=>prev.filter((_,idx)=>idx!==i))}
+                                  style={{background:"none",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:14,padding:"0 4px"}}>✕</button>
+                              </div>
+                            ))}
+                            <button onClick={()=>setDeliveryFiles([])} style={{fontSize:11,color:"#94a3b8",background:"none",border:"none",cursor:"pointer",textAlign:"right"}}>清空全部</button>
+                          </div>
+                        )}
                         {error&&<div style={{color:"#dc2626",fontSize:13,marginTop:12,padding:"8px 12px",background:"#fef2f2",borderRadius:8}}>{error}</div>}
-                        <button onClick={parseDelivery} disabled={!deliveryFile||loading}
-                          style={{marginTop:20,width:"100%",padding:"14px 0",borderRadius:10,fontWeight:700,fontSize:15,border:"none",letterSpacing:1,
-                            cursor:deliveryFile&&!loading?"pointer":"not-allowed",
-                            background:deliveryFile&&!loading?"#1e293b":"#e2e8f0",
-                            color:deliveryFile&&!loading?"#fff":"#94a3b8"}}>
-                          {loading?`⏳ ${loadingMsg}`:"解析送货单 →"}
+                        <button onClick={parseDelivery} disabled={!deliveryFiles.length||loading}
+                          style={{marginTop:16,width:"100%",padding:"14px 0",borderRadius:10,fontWeight:700,fontSize:15,border:"none",letterSpacing:1,
+                            cursor:deliveryFiles.length&&!loading?"pointer":"not-allowed",
+                            background:deliveryFiles.length&&!loading?"#1e293b":"#e2e8f0",
+                            color:deliveryFiles.length&&!loading?"#fff":"#94a3b8"}}>
+                          {loading?`⏳ ${loadingMsg}`:`解析送货单${deliveryFiles.length>1?` (${deliveryFiles.length}张)`:""} →`}
                         </button>
                       </>
                     )
@@ -1012,7 +1040,7 @@ export default function App() {
                     <>
                       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
                         <h3 style={{margin:0,fontSize:16,color:"#1e293b",fontWeight:700}}>第三步：核对数量</h3>
-                        <button onClick={()=>{setStep(1);setDeliveryFile(null);setError("");}}
+                        <button onClick={()=>{setStep(1);setDeliveryFiles([]);setError("");}}
                           style={{fontSize:12,color:"#64748b",background:"#f1f5f9",border:"none",borderRadius:6,padding:"4px 12px",cursor:"pointer"}}>
                           重新上传送货单
                         </button>
