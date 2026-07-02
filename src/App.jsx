@@ -136,6 +136,7 @@ const toNumber = (v, fallback = 0) => {
 const normalizeContract = (r) => ({
   contract_no: String(r.contract_no || "").trim(),
   contract_date: String(r.contract_date || "").trim(),
+  delivery_no: String(r.delivery_no || "").trim(),
   seller: String(r.seller || "").trim(),
   seller_contact: String(r.seller_contact || "").trim(),
   buyer: String(r.buyer || "").trim(),
@@ -552,9 +553,9 @@ export default function App() {
   const [saveMsg, setSaveMsg] = useState("");
   const [drafts, setDrafts] = useState({}); // 所有草稿
   const [showDraftPanel, setShowDraftPanel] = useState(false);
-  const [settlementMode, setSettlementMode] = useState("contract");
   const [inputMode, setInputMode] = useState("upload"); // "upload" | "manual"
   const [manualForm, setManualForm] = useState({contract_no:"",contract_date:"",buyer:"",seller:"深圳市源丰隆实业有限公司",seller_contact:"梁生",buyer_contact:"",product_name:"",contract_qty:"",unit_price:"",trade_mode:"含增值税13%",amount_cn:"",delivery_no:""});
+  const [manualItems, setManualItems] = useState([{name:"",spec:"",color:"白色",unit:"件",contract_qty:"",delivered_qty:"",note:""}]);
   const [customers, setCustomers] = useState([]);
   const [matchedCustomer, setMatchedCustomer] = useState(null);
 
@@ -569,7 +570,6 @@ export default function App() {
     if (step >= 1 && contract?.contract_no) {
       saveDraft(step, contract, items);
       setDrafts(loadAllDrafts());
-    fetchCustomers().then(setCustomers).catch(()=>{});
     }
   }, [step, contract, items]);
 
@@ -605,22 +605,73 @@ export default function App() {
   // ── 手动填写合同 ──
   const submitManual = () => {
     const f = manualForm;
-    if (!f.contract_no.trim() || !f.buyer.trim() || !f.contract_qty || !f.unit_price) {
-      setError("请填写合同号、买方、数量和单价");
+    const contractQty = toNumber(f.contract_qty, 0);
+    const unitPrice = toNumber(f.unit_price, 0);
+    if (!f.contract_no.trim() || !f.buyer.trim() || contractQty <= 0 || unitPrice <= 0) {
+      setError("请填写合同号、买方、有效数量和有效单价");
       return;
     }
     const normalized = normalizeContract({
       ...f,
-      contract_qty: Number(f.contract_qty),
-      unit_price: Number(f.unit_price),
+      contract_date: f.contract_date || formatLocalDate(),
+      contract_qty: contractQty,
+      unit_price: unitPrice,
       items: [],
     });
     setContract(normalized);
     setItems([]);
+    setManualItems([{
+      name: normalized.product_name || "",
+      spec: "",
+      color: "白色",
+      unit: "件",
+      contract_qty: String(normalized.contract_qty || ""),
+      delivered_qty: String(normalized.contract_qty || ""),
+      note: "",
+    }]);
     const mc = matchCustomer(normalized.buyer, customers);
     setMatchedCustomer(mc || null);
     setError("");
     setStep(1);
+  };
+
+  const updateManualItem = (idx, key, value) => {
+    setManualItems(prev => prev.map((it, i) => i === idx ? {...it, [key]: value} : it));
+  };
+
+  const addManualItem = () => {
+    setManualItems(prev => [...prev, {name:"",spec:"",color:"白色",unit:"件",contract_qty:String(contract?.contract_qty || ""),delivered_qty:"",note:""}]);
+  };
+
+  const removeManualItem = (idx) => {
+    setManualItems(prev => prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx));
+  };
+
+  const submitManualDelivery = () => {
+    const rows = manualItems
+      .map(it => {
+        const deliveredQty = toNumber(it.delivered_qty, 0);
+        return {
+          name: String(it.name || "").trim(),
+          spec: String(it.spec || "").trim(),
+          color: String(it.color || "白色").trim(),
+          unit: String(it.unit || "件").trim(),
+          contract_qty: toNumber(it.contract_qty, contract?.contract_qty || 0),
+          delivered_qty: deliveredQty,
+          delivered_qty_input: deliveredQty ? String(deliveredQty) : "",
+          note: String(it.note || "").trim(),
+        };
+      })
+      .filter(it => it.name && it.delivered_qty > 0);
+
+    if (!rows.length) {
+      setError("请至少填写一条送货明细，并填写实送数量");
+      return;
+    }
+    setItems(rows);
+    setContract(c => ({...c, delivery_no: manualForm.delivery_no || c?.delivery_no || ""}));
+    setError("");
+    setStep(2);
   };
 
   // ── 解析合同 ──
@@ -661,7 +712,9 @@ export default function App() {
       const deliveryItems = (raw.items || []).map(it=>({
         name: String(it.name||"").trim(),
         spec: String(it.spec||"").trim(),
-        color: String(it.color||"").trim(),
+        color: String(it.color||"白色").trim(),
+        unit: String(it.unit || "件").trim(),
+        contract_qty: toNumber(it.contract_qty, contract?.contract_qty || 0),
         delivered_qty: toNumber(it.delivered_qty, 0),
         delivered_qty_input: String(toNumber(it.delivered_qty, 0)),
         note: "",
@@ -699,7 +752,10 @@ export default function App() {
     setDrafts(loadAllDrafts());
     fetchCustomers().then(setCustomers).catch(()=>{});
     setStep(0); setContract(null); setItems([]); setContractFile(null);
-    setDeliveryFile(null); setError(""); setSaveMsg(""); setInputMode("upload"); setManualForm({contract_no:"",contract_date:"",buyer:"",seller:"深圳市源丰隆实业有限公司",seller_contact:"梁生",buyer_contact:"",product_name:"",contract_qty:"",unit_price:"",trade_mode:"含增值税13%",amount_cn:"",delivery_no:""});
+    setDeliveryFile(null); setError(""); setSaveMsg(""); setInputMode("upload");
+    setManualForm({contract_no:"",contract_date:"",buyer:"",seller:"深圳市源丰隆实业有限公司",seller_contact:"梁生",buyer_contact:"",product_name:"",contract_qty:"",unit_price:"",trade_mode:"含增值税13%",amount_cn:"",delivery_no:""});
+    setManualItems([{name:"",spec:"",color:"白色",unit:"件",contract_qty:"",delivered_qty:"",note:""}]);
+    setMatchedCustomer(null);
   };
 
   const settlement = contract && items.length > 0 ? calcSettlement(contract, items) : null;
@@ -716,7 +772,7 @@ export default function App() {
             <span style={{fontSize:20}}>📋</span>
             <span style={{fontSize:15,fontWeight:700,letterSpacing:2}}>对账单智能生成工具</span>
           </div>
-          <p style={{color:"#64748b",fontSize:13,margin:0}}>上传采购合同 → 比对送货数量 → 一键导出 Excel 对账单</p>
+          <p style={{color:"#64748b",fontSize:13,margin:0}}>上传或手动录入合同 → 比对送货数量 → 一键导出 Excel 对账单</p>
         </div>
 
         {/* 草稿面板 */}
@@ -788,19 +844,59 @@ export default function App() {
             <>
               <Steps current={step}/>
 
-              {/* STEP 0: 上传合同 */}
+              {/* STEP 0: 上传 / 手动录入合同 */}
               {step===0 && (
                 <div>
-                  <h3 style={{margin:"0 0 20px",fontSize:16,color:"#1e293b",fontWeight:700}}>第一步：上传采购合同</h3>
-                  <UploadBox label="上传合同图片（JPG/PNG）或 PDF" onFile={setContractFile} file={contractFile}/>
-                  {error&&<div style={{color:"#dc2626",fontSize:13,marginTop:12,padding:"8px 12px",background:"#fef2f2",borderRadius:8}}>{error}</div>}
-                  <button onClick={parseContract} disabled={!contractFile||loading}
-                    style={{marginTop:20,width:"100%",padding:"14px 0",borderRadius:10,fontWeight:700,fontSize:15,border:"none",letterSpacing:1,
-                      cursor:contractFile&&!loading?"pointer":"not-allowed",
-                      background:contractFile&&!loading?"#1e293b":"#e2e8f0",
-                      color:contractFile&&!loading?"#fff":"#94a3b8"}}>
-                    {loading?`⏳ ${loadingMsg}`:"解析合同 →"}
-                  </button>
+                  <h3 style={{margin:"0 0 20px",fontSize:16,color:"#1e293b",fontWeight:700}}>第一步：建立合同资料</h3>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:18}}>
+                    <button onClick={()=>{setInputMode("upload");setError("");}}
+                      style={{padding:"12px 0",borderRadius:10,border:"none",fontWeight:700,cursor:"pointer",background:inputMode==="upload"?"#1e293b":"#e2e8f0",color:inputMode==="upload"?"#fff":"#64748b"}}>
+                      📄 上传识别
+                    </button>
+                    <button onClick={()=>{setInputMode("manual");setError("");}}
+                      style={{padding:"12px 0",borderRadius:10,border:"none",fontWeight:700,cursor:"pointer",background:inputMode==="manual"?"#1e293b":"#e2e8f0",color:inputMode==="manual"?"#fff":"#64748b"}}>
+                      ✍️ 手动制单
+                    </button>
+                  </div>
+
+                  {inputMode === "upload" ? (
+                    <>
+                      <UploadBox label="上传合同图片（JPG/PNG）或 PDF" onFile={setContractFile} file={contractFile}/>
+                      {error&&<div style={{color:"#dc2626",fontSize:13,marginTop:12,padding:"8px 12px",background:"#fef2f2",borderRadius:8}}>{error}</div>}
+                      <button onClick={parseContract} disabled={!contractFile||loading}
+                        style={{marginTop:20,width:"100%",padding:"14px 0",borderRadius:10,fontWeight:700,fontSize:15,border:"none",letterSpacing:1,
+                          cursor:contractFile&&!loading?"pointer":"not-allowed",
+                          background:contractFile&&!loading?"#1e293b":"#e2e8f0",
+                          color:contractFile&&!loading?"#fff":"#94a3b8"}}>
+                        {loading?`⏳ ${loadingMsg}`:"解析合同 →"}
+                      </button>
+                    </>
+                  ) : (
+                    <div style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:12,padding:18}}>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                        {[
+                          ["合同编号 *","contract_no"],["合同日期","contract_date"],
+                          ["买方 *","buyer"],["买方联系人","buyer_contact"],
+                          ["卖方","seller"],["卖方联系人","seller_contact"],
+                          ["产品名称","product_name"],["送货单号","delivery_no"],
+                          ["合同数量 *","contract_qty"],["含税单价 *","unit_price"],
+                          ["贸易方式","trade_mode"],["金额大写","amount_cn"],
+                        ].map(([label,key])=>(
+                          <div key={key}>
+                            <div style={{fontSize:12,color:"#64748b",marginBottom:4}}>{label}</div>
+                            <input value={manualForm[key]} onChange={e=>setManualForm(f=>({...f,[key]:e.target.value}))}
+                              placeholder={key==="contract_date"?formatLocalDate():""}
+                              style={{width:"100%",boxSizing:"border-box",padding:"9px 10px",border:"1px solid #e2e8f0",borderRadius:8,fontSize:13,outline:"none"}}/>
+                          </div>
+                        ))}
+                      </div>
+                      {error&&<div style={{color:"#dc2626",fontSize:13,marginTop:12,padding:"8px 12px",background:"#fef2f2",borderRadius:8}}>{error}</div>}
+                      <button onClick={submitManual}
+                        style={{marginTop:18,width:"100%",padding:"14px 0",borderRadius:10,fontWeight:700,fontSize:15,border:"none",cursor:"pointer",background:"#1e293b",color:"#fff"}}>
+                        下一步：录入送货明细 →
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -840,20 +936,56 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* STEP 1: 上传送货单 */}
+                  {/* STEP 1: 上传或手动录入送货单 */}
                   {step===1 && (
-                    <>
-                      <h3 style={{margin:"0 0 16px",fontSize:16,color:"#1e293b",fontWeight:700}}>第二步：上传送货单</h3>
-                      <UploadBox label="上传送货单 / 工单图片或 PDF" onFile={setDeliveryFile} file={deliveryFile}/>
-                      {error&&<div style={{color:"#dc2626",fontSize:13,marginTop:12,padding:"8px 12px",background:"#fef2f2",borderRadius:8}}>{error}</div>}
-                      <button onClick={parseDelivery} disabled={!deliveryFile||loading}
-                        style={{marginTop:20,width:"100%",padding:"14px 0",borderRadius:10,fontWeight:700,fontSize:15,border:"none",letterSpacing:1,
-                          cursor:deliveryFile&&!loading?"pointer":"not-allowed",
-                          background:deliveryFile&&!loading?"#1e293b":"#e2e8f0",
-                          color:deliveryFile&&!loading?"#fff":"#94a3b8"}}>
-                        {loading?`⏳ ${loadingMsg}`:"解析送货单 →"}
-                      </button>
-                    </>
+                    inputMode === "manual" ? (
+                      <>
+                        <h3 style={{margin:"0 0 16px",fontSize:16,color:"#1e293b",fontWeight:700}}>第二步：手动录入送货明细</h3>
+                        <div style={{overflowX:"auto",border:"1px solid #e2e8f0",borderRadius:10}}>
+                          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:760}}>
+                            <thead>
+                              <tr style={{background:"#1e293b",color:"#fff"}}>
+                                {["物料名称*","规格","颜色","单位","合同量","实送量*","备注","操作"].map(h=><th key={h} style={{padding:"8px 10px",textAlign:"center"}}>{h}</th>)}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {manualItems.map((it,i)=>(
+                                <tr key={i} style={{background:i%2?"#f8fafc":"#fff"}}>
+                                  {["name","spec","color","unit","contract_qty","delivered_qty","note"].map(key=>(
+                                    <td key={key} style={{padding:"6px",borderBottom:"1px solid #e2e8f0"}}>
+                                      <input value={it[key] || ""} onChange={e=>updateManualItem(i,key,e.target.value)}
+                                        style={{width:"100%",boxSizing:"border-box",padding:"6px 8px",border:"1px solid #e2e8f0",borderRadius:6,fontSize:12,outline:"none",textAlign:["contract_qty","delivered_qty"].includes(key)?"center":"left"}}/>
+                                    </td>
+                                  ))}
+                                  <td style={{padding:"6px",borderBottom:"1px solid #e2e8f0",textAlign:"center"}}>
+                                    <button onClick={()=>removeManualItem(i)} style={{border:"none",background:"#fee2e2",color:"#dc2626",borderRadius:6,padding:"5px 9px",cursor:"pointer"}}>删除</button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <button onClick={addManualItem} style={{marginTop:10,width:"100%",padding:"10px 0",borderRadius:10,border:"1px dashed #94a3b8",background:"#f8fafc",color:"#475569",fontWeight:600,cursor:"pointer"}}>＋ 新增一条物料</button>
+                        {error&&<div style={{color:"#dc2626",fontSize:13,marginTop:12,padding:"8px 12px",background:"#fef2f2",borderRadius:8}}>{error}</div>}
+                        <button onClick={submitManualDelivery}
+                          style={{marginTop:16,width:"100%",padding:"14px 0",borderRadius:10,fontWeight:700,fontSize:15,border:"none",cursor:"pointer",background:"#1e293b",color:"#fff"}}>
+                          进入核对并生成对账单 →
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <h3 style={{margin:"0 0 16px",fontSize:16,color:"#1e293b",fontWeight:700}}>第二步：上传送货单</h3>
+                        <UploadBox label="上传送货单 / 工单图片或 PDF" onFile={setDeliveryFile} file={deliveryFile}/>
+                        {error&&<div style={{color:"#dc2626",fontSize:13,marginTop:12,padding:"8px 12px",background:"#fef2f2",borderRadius:8}}>{error}</div>}
+                        <button onClick={parseDelivery} disabled={!deliveryFile||loading}
+                          style={{marginTop:20,width:"100%",padding:"14px 0",borderRadius:10,fontWeight:700,fontSize:15,border:"none",letterSpacing:1,
+                            cursor:deliveryFile&&!loading?"pointer":"not-allowed",
+                            background:deliveryFile&&!loading?"#1e293b":"#e2e8f0",
+                            color:deliveryFile&&!loading?"#fff":"#94a3b8"}}>
+                          {loading?`⏳ ${loadingMsg}`:"解析送货单 →"}
+                        </button>
+                      </>
+                    )
                   )}
 
                   {/* STEP 2: 核对数量 */}
