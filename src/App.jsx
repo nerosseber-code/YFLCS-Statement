@@ -553,6 +553,8 @@ export default function App() {
   const [drafts, setDrafts] = useState({}); // 所有草稿
   const [showDraftPanel, setShowDraftPanel] = useState(false);
   const [settlementMode, setSettlementMode] = useState("contract");
+  const [inputMode, setInputMode] = useState("upload"); // "upload" | "manual"
+  const [manualForm, setManualForm] = useState({contract_no:"",contract_date:"",buyer:"",seller:"深圳市源丰隆实业有限公司",seller_contact:"梁生",buyer_contact:"",product_name:"",contract_qty:"",unit_price:"",trade_mode:"含增值税13%",amount_cn:"",delivery_no:""});
   const [customers, setCustomers] = useState([]);
   const [matchedCustomer, setMatchedCustomer] = useState(null);
 
@@ -599,6 +601,27 @@ export default function App() {
       const n = Number(raw);
       return {...it, delivered_qty: Number.isFinite(n) ? n : null};
     }));
+
+  // ── 手动填写合同 ──
+  const submitManual = () => {
+    const f = manualForm;
+    if (!f.contract_no.trim() || !f.buyer.trim() || !f.contract_qty || !f.unit_price) {
+      setError("请填写合同号、买方、数量和单价");
+      return;
+    }
+    const normalized = normalizeContract({
+      ...f,
+      contract_qty: Number(f.contract_qty),
+      unit_price: Number(f.unit_price),
+      items: [],
+    });
+    setContract(normalized);
+    setItems([]);
+    const mc = matchCustomer(normalized.buyer, customers);
+    setMatchedCustomer(mc || null);
+    setError("");
+    setStep(1);
+  };
 
   // ── 解析合同 ──
   const parseContract = async () => {
@@ -676,7 +699,7 @@ export default function App() {
     setDrafts(loadAllDrafts());
     fetchCustomers().then(setCustomers).catch(()=>{});
     setStep(0); setContract(null); setItems([]); setContractFile(null);
-    setDeliveryFile(null); setError(""); setSaveMsg("");
+    setDeliveryFile(null); setError(""); setSaveMsg(""); setInputMode("upload"); setManualForm({contract_no:"",contract_date:"",buyer:"",seller:"深圳市源丰隆实业有限公司",seller_contact:"梁生",buyer_contact:"",product_name:"",contract_qty:"",unit_price:"",trade_mode:"含增值税13%",amount_cn:"",delivery_no:""});
   };
 
   const settlement = contract && items.length > 0 ? calcSettlement(contract, items) : null;
