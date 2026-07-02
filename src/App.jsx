@@ -158,23 +158,42 @@ const normalizeContract = (r) => ({
 });
 
 // ─── Claude API ────────────────────────────────────────────────────────────────
+const CLAUDE_MODELS = ["claude-sonnet-5", "claude-sonnet-4-6"];
+
 const callClaude = async (messages, system, maxTokens = 1200) => {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: maxTokens, system, messages }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
-  const text = data.content?.map((b) => b.text || "").join("").trim() || "";
-  const clean = text.replace(/```json[\s\S]*?```|```/g, "").trim();
-  try { return JSON.parse(clean); }
-  catch { throw new Error("模型返回的不是合法 JSON，请重试"); }
+  let lastError = null;
+
+  for (const model of CLAUDE_MODELS) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({ model, max_tokens: maxTokens, system, messages }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (res.ok) {
+      const text = data.content?.map((b) => b.text || "").join("").trim() || "";
+      const clean = text.replace(/```json[\s\S]*?```|```/g, "").trim();
+      try { return JSON.parse(clean); }
+      catch { throw new Error("模型返回的不是合法 JSON，请重试"); }
+    }
+
+    const message = data?.error?.message || `HTTP ${res.status}`;
+    lastError = new Error(`${model}: ${message}`);
+
+    // 模型不存在/不可用时自动尝试下一个模型；余额不足、密钥错误等不重试。
+    if (!/model|not found|not_found|invalid|deprecated|unavailable/i.test(message)) {
+      break;
+    }
+  }
+
+  throw lastError || new Error("Claude API 调用失败");
 };
 
 // ─── 结算 ──────────────────────────────────────────────────────────────────────
