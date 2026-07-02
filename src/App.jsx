@@ -414,6 +414,7 @@ export default function App() {
   const [saveMsg, setSaveMsg] = useState("");
   const [drafts, setDrafts] = useState({}); // 所有草稿
   const [showDraftPanel, setShowDraftPanel] = useState(false);
+  const [settlementMode, setSettlementMode] = useState("contract");
 
   // ── 启动时加载所有草稿 ──
   useEffect(() => {
