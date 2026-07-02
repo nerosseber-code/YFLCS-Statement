@@ -11,19 +11,11 @@ const loadAllDrafts = () => {
   catch { return {}; }
 };
 
-const saveDraft = (step, contract, items, meta = {}) => {
+const saveDraft = (step, contract, items) => {
   if (!contract?.contract_no) return;
   try {
     const all = loadAllDrafts();
-    all[contract.contract_no] = {
-      step,
-      contract,
-      items,
-      inputMode: meta.inputMode || "upload",
-      manualForm: meta.manualForm || null,
-      manualItems: meta.manualItems || null,
-      savedAt: new Date().toISOString(),
-    };
+    all[contract.contract_no] = { step, contract, items, savedAt: new Date().toISOString() };
     localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
   } catch {}
 };
@@ -73,59 +65,44 @@ const saveStatement = async (contract, items, settlement) => {
       operator: "我",
     }),
   });
-  if (!res.ok) throw new Error(await readApiError(res, "保存失败"));
+  if (!res.ok) throw new Error("保存失败");
   return res.json();
 };
 
-const readApiError = async (res, fallback) => {
-  try {
-    const data = await res.json();
-    return data?.message || data?.error_description || data?.error || fallback;
-  } catch {
-    try {
-      const txt = await res.text();
-      return txt || fallback;
-    } catch {
-      return fallback;
-    }
-  }
-};
-
 const fetchStatements = async (search = "") => {
-  const q = String(search || "").trim().replace(/[(),]/g, " ");
   let path = "/statements?order=created_at.desc&limit=50";
-  if (q) path += `&or=(contract_no.ilike.*${encodeURIComponent(q)}*,buyer.ilike.*${encodeURIComponent(q)}*)`;
+  if (search) path += `&or=(contract_no.ilike.*${search}*,buyer.ilike.*${search}*)`;
   const res = await sbFetch(path);
-  if (!res.ok) throw new Error(await readApiError(res, "查询失败"));
+  if (!res.ok) throw new Error("查询失败");
   return res.json();
 };
 
 const deleteStatement = async (id) => {
   const res = await sbFetch(`/statements?id=eq.${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(await readApiError(res, "删除失败"));
+  if (!res.ok) throw new Error("删除失败");
 };
 
 // ─── 客户资料 Supabase ───────────────────────────────────────────────────────
 const fetchCustomers = async () => {
   const res = await sbFetch("/customers?order=company_name.asc");
-  if (!res.ok) throw new Error(await readApiError(res, "获取客户失败"));
+  if (!res.ok) throw new Error("获取客户失败");
   return res.json();
 };
 
 const saveCustomer = async (data) => {
   const res = await sbFetch("/customers", { method: "POST", body: JSON.stringify(data) });
-  if (!res.ok) throw new Error(await readApiError(res, "保存客户失败"));
+  if (!res.ok) throw new Error("保存客户失败");
   return res.json();
 };
 
 const updateCustomer = async (id, data) => {
   const res = await sbFetch(`/customers?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(data) });
-  if (!res.ok) throw new Error(await readApiError(res, "更新客户失败"));
+  if (!res.ok) throw new Error("更新客户失败");
 };
 
 const deleteCustomer = async (id) => {
   const res = await sbFetch(`/customers?id=eq.${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(await readApiError(res, "删除客户失败"));
+  if (!res.ok) throw new Error("删除客户失败");
 };
 
 const matchCustomer = (buyerName, customers) => {
@@ -152,46 +129,8 @@ const formatLocalDate = (d = new Date()) => {
 
 const toNumber = (v, fallback = 0) => {
   if (typeof v === "number") return Number.isFinite(v) ? v : fallback;
-  const cleaned = String(v ?? "")
-    .replace(/[¥￥,，\s]/g, "")
-    .replace(/人民币|港币|美元|元|套|件|pcs?|個|个/gi, "");
-  const n = Number(cleaned);
+  const n = Number(String(v ?? "").replace(/[¥,\s]/g, ""));
   return Number.isFinite(n) ? n : fallback;
-};
-
-const itemKey = (it) =>
-  [it.name, it.spec, it.color || "白色", it.unit || "件"]
-    .map(v => String(v || "").replace(/\s/g, "").toLowerCase())
-    .join("|");
-
-const mergeDeliveryItems = (rows = []) => {
-  const map = new Map();
-  rows.forEach((raw) => {
-    const delivered = toNumber(raw.delivered_qty, 0);
-    if (!String(raw.name || "").trim() || delivered <= 0) return;
-    const row = {
-      name: String(raw.name || "").trim(),
-      spec: String(raw.spec || "").trim(),
-      color: String(raw.color || "白色").trim(),
-      unit: String(raw.unit || "件").trim(),
-      contract_qty: toNumber(raw.contract_qty, 0),
-      delivered_qty: delivered,
-      delivered_qty_input: String(delivered),
-      note: String(raw.note || "").trim(),
-    };
-    const key = itemKey(row);
-    const prev = map.get(key);
-    if (prev) {
-      const nextQty = toNumber(prev.delivered_qty, 0) + delivered;
-      prev.delivered_qty = nextQty;
-      prev.delivered_qty_input = String(nextQty);
-      prev.contract_qty = prev.contract_qty || row.contract_qty;
-      prev.note = [...new Set([prev.note, row.note].filter(Boolean))].join(" / ");
-    } else {
-      map.set(key, row);
-    }
-  });
-  return Array.from(map.values());
 };
 
 const normalizeContract = (r) => ({
@@ -221,7 +160,52 @@ const normalizeContract = (r) => ({
 // ─── Claude API ────────────────────────────────────────────────────────────────
 const CLAUDE_MODELS = ["claude-sonnet-5", "claude-sonnet-4-6"];
 
-const callClaude = async (messages, system, maxTokens = 1200) => {
+const stripJsonFences = (text = "") => String(text)
+  .trim()
+  .replace(/^```(?:json|JSON)?\s*/i, "")
+  .replace(/```\s*$/i, "")
+  .trim();
+
+const extractJsonCandidate = (text = "") => {
+  const clean = stripJsonFences(text);
+  try { JSON.parse(clean); return clean; } catch {}
+
+  const starts = [clean.indexOf("{"), clean.indexOf("[")].filter(i => i >= 0).sort((a,b) => a-b);
+  if (!starts.length) return clean;
+
+  const start = starts[0];
+  const open = clean[start];
+  const close = open === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < clean.length; i++) {
+    const ch = clean[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === open) depth++;
+    if (ch === close) depth--;
+    if (depth === 0) return clean.slice(start, i + 1).trim();
+  }
+
+  const last = clean.lastIndexOf(close);
+  return last >= start ? clean.slice(start, last + 1).trim() : clean;
+};
+
+const parseClaudeJson = (text) => {
+  const candidate = extractJsonCandidate(text);
+  try { return JSON.parse(candidate); }
+  catch (e) {
+    console.warn("Claude raw response:", text);
+    console.warn("JSON candidate:", candidate);
+    throw new Error("模型返回内容无法解析为 JSON；已记录原始返回，请重试或改用手动录入");
+  }
+};
+
+const callClaude = async (messages, system, maxTokens = 1800) => {
   let lastError = null;
 
   for (const model of CLAUDE_MODELS) {
@@ -233,22 +217,14 @@ const callClaude = async (messages, system, maxTokens = 1200) => {
         "anthropic-version": "2023-06-01",
         "anthropic-dangerous-direct-browser-access": "true",
       },
-      body: JSON.stringify({ model, max_tokens: maxTokens, system, messages }),
+      body: JSON.stringify({ model, max_tokens: maxTokens, temperature: 0, system, messages }),
     });
 
     const data = await res.json().catch(() => ({}));
 
     if (res.ok) {
-      const text = data.content?.map((b) => b.text || "").join("").trim() || "";
-      const clean = text.replace(/```json[\s\S]*?```|```/g, "").trim();
-      // Try direct parse first
-      try { return JSON.parse(clean); } catch {}
-      // Try extracting JSON object with regex
-      const match = clean.match(/\{[\s\S]*\}/);
-      if (match) {
-        try { return JSON.parse(match[0]); } catch {}
-      }
-      throw new Error("模型返回的不是合法 JSON，请重试");
+      const text = data.content?.map((b) => b.text || "").join("\n").trim() || "";
+      return parseClaudeJson(text);
     }
 
     const message = data?.error?.message || `HTTP ${res.status}`;
@@ -265,15 +241,14 @@ const callClaude = async (messages, system, maxTokens = 1200) => {
 
 // ─── 结算 ──────────────────────────────────────────────────────────────────────
 const calcSettlement = (contract, deliveryItems) => {
-  const merged = mergeDeliveryItems(deliveryItems);
-  const qtys = merged.map(it => toNumber(it.delivered_qty, 0)).filter(n => n > 0);
+  const qtys = deliveryItems.map(it => toNumber(it.delivered_qty, 0)).filter(n => n > 0);
   const minQty = qtys.length ? Math.min(...qtys) : 0;
   const contractQty = toNumber(contract.contract_qty, 0);
-  const settleQty = contractQty > 0 ? Math.min(minQty, contractQty) : minQty;
+  const settleQty = Math.min(minQty, contractQty);
   return {
     minQty,
     settleQty,
-    canSettle: contractQty > 0 && minQty >= contractQty,
+    canSettle: minQty >= contractQty,
     totalAmt: +(settleQty * toNumber(contract.unit_price, 0)).toFixed(2),
   };
 };
@@ -655,20 +630,15 @@ export default function App() {
   // ── 自动保存草稿 ──
   useEffect(() => {
     if (step >= 1 && contract?.contract_no) {
-      saveDraft(step, contract, items, { inputMode, manualForm, manualItems });
+      saveDraft(step, contract, items);
       setDrafts(loadAllDrafts());
     }
-  }, [step, contract, items, inputMode, manualForm, manualItems]);
+  }, [step, contract, items]);
 
   const resumeDraft = (draft) => {
     setStep(draft.step);
     setContract(draft.contract);
-    setItems(Array.isArray(draft.items) ? draft.items : []);
-    setInputMode(draft.inputMode || "upload");
-    if (draft.manualForm) setManualForm(draft.manualForm);
-    if (Array.isArray(draft.manualItems) && draft.manualItems.length) setManualItems(draft.manualItems);
-    const mc = matchCustomer(draft.contract?.buyer, customers);
-    setMatchedCustomer(mc || null);
+    setItems(draft.items);
     setShowDraftPanel(false);
     setPage("main");
   };
@@ -679,6 +649,23 @@ export default function App() {
     fetchCustomers().then(setCustomers).catch(()=>{});
     // 如果删的是当前编辑中的草稿，重置
     if (contract?.contract_no === contractNo) resetAll();
+  };
+
+  const addDeliveryFiles = (files) => {
+    const incoming = Array.from(files || []).filter(f => f && f.size <= 10 * 1024 * 1024);
+    if (!incoming.length) return;
+    setDeliveryFiles(prev => {
+      const seen = new Set(prev.map(f => `${f.name}|${f.size}|${f.lastModified}`));
+      const next = [...prev];
+      for (const f of incoming) {
+        const key = `${f.name}|${f.size}|${f.lastModified}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          next.push(f);
+        }
+      }
+      return next;
+    });
   };
 
   // ── 数量输入 ──
@@ -739,29 +726,6 @@ export default function App() {
     setManualItems(prev => prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx));
   };
 
-  const appendDeliveryFiles = (files) => {
-    const valid = Array.from(files || []).filter((file) => {
-      if (file.size > 10 * 1024 * 1024) {
-        setError(`${file.name} 超过 10MB，已跳过`);
-        return false;
-      }
-      return true;
-    });
-    if (!valid.length) return;
-    setDeliveryFiles(prev => {
-      const seen = new Set(prev.map(f => `${f.name}-${f.size}-${f.lastModified}`));
-      const next = [...prev];
-      valid.forEach((file) => {
-        const key = `${file.name}-${file.size}-${file.lastModified}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          next.push(file);
-        }
-      });
-      return next;
-    });
-  };
-
   const submitManualDelivery = () => {
     const rows = manualItems
       .map(it => {
@@ -783,10 +747,27 @@ export default function App() {
       setError("请至少填写一条送货明细，并填写实送数量");
       return;
     }
-    setItems(mergeDeliveryItems(rows));
+    setItems(rows);
     setContract(c => ({...c, delivery_no: manualForm.delivery_no || c?.delivery_no || ""}));
     setError("");
     setStep(2);
+  };
+
+  const mergeDeliveryItems = (rows) => {
+    const map = new Map();
+    for (const it of rows) {
+      const key = [it.name, it.spec, it.color || "白色", it.unit || "件"].map(v => String(v || "").replace(/\s+/g, "").toLowerCase()).join("|");
+      const prev = map.get(key);
+      if (prev) {
+        const qty = toNumber(prev.delivered_qty, 0) + toNumber(it.delivered_qty, 0);
+        prev.delivered_qty = qty;
+        prev.delivered_qty_input = String(qty);
+        prev.note = [prev.note, it.note].filter(Boolean).join(" / ");
+      } else {
+        map.set(key, {...it});
+      }
+    }
+    return Array.from(map.values());
   };
 
   // ── 解析合同 ──
@@ -802,13 +783,7 @@ export default function App() {
         : [{type:"image",source:{type:"base64",media_type:mime,data:b64}}];
       content.push({type:"text",text:`从这份采购合同提取信息。只输出一个JSON对象，不要任何解释、不要markdown代码块，直接以{开头以}结尾：{"contract_no":"","contract_date":"YYYY-MM-DD","seller":"","seller_contact":"","buyer":"","buyer_contact":"","product_name":"","contract_qty":0,"unit_price":0,"trade_mode":"","amount_cn":""}`});
       const raw = await callClaude([{role:"user",content}], "你是采购文件解析助手。严格只输出纯JSON，绝对不要输出任何其他文字、解释或markdown格式，第一个字符必须是{，最后一个字符必须是}。");
-      const normalized = normalizeContract({
-        ...raw,
-        contract_date: raw.contract_date || formatLocalDate(),
-      });
-      if (!normalized.contract_no || !normalized.buyer) {
-        throw new Error("合同号或买方识别为空，请改用手动制单补录");
-      }
+      const normalized = normalizeContract(raw);
       setContract(normalized);
       setItems([]); // 清空，等送货单填充
       const mc = matchCustomer(normalized.buyer, customers); setMatchedCustomer(mc || null);
@@ -833,18 +808,39 @@ export default function App() {
         const msgContent = isPdf
           ? [{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}]
           : [{type:"image",source:{type:"base64",media_type:mime,data:b64}}];
-        msgContent.push({type:"text",text:`这是一张送货单（图片可能有旋转，请自动识别方向）。提取每一行物料的名称、规格和数量，数量取数字栏的最终数字（规格栏有算式如1064×40+550则数量为43110）。只输出JSON，不要任何文字说明：{"delivery_no":"","delivery_date":"","items":[{"name":"","spec":"","color":"","delivered_qty":数字}]}`});
-        const raw = await callClaude([{role:"user",content:msgContent}], "你是仓储单据解析助手。只输出纯JSON，不要markdown代码块，不要任何解释，直接以{开头以}结尾。", 2000);
-        const parsed = (raw.items || []).map(it=>({
-          name: String(it.name||"").trim(),
-          spec: String(it.spec||"").trim(),
-          color: String(it.color||"白色").trim(),
-          unit: String(it.unit||"件").trim(),
-          contract_qty: toNumber(it.contract_qty, contract?.contract_qty || 0),
-          delivered_qty: toNumber(it.delivered_qty, 0),
-          delivered_qty_input: String(toNumber(it.delivered_qty, 0)),
-          note: raw.delivery_no||"",
-        }));
+        msgContent.push({type:"text",text:`请读取这张中文送货单照片。照片可能横拍、竖拍、旋转90度、轻微倾斜或有阴影，请先按文字方向理解表格。
+
+需要识别：
+- delivery_no：票据右侧或标题旁的 NO / 单号，例如 06-24-01。
+- delivery_date：日期，例如 2026-06-24；看不清则空字符串。
+- customer_name：客户名称。
+- order_no：订单号。
+- items：逐行读取表格里的货物编码、货物名称、规格、单位、数量、备注。
+
+表格规则：
+- 规格栏可能是算式，如 1064×40+550 或 1064*40+550；不要计算规格栏。
+- 数量必须取“数量”列最终数字，例如 43110、23150。
+- 备注列数字如 41、11 不要当成数量。
+- 空白行忽略。
+- 看不清的字段用空字符串，不要猜。
+
+只输出一个合法 JSON 对象，不要markdown，不要解释，不要代码块：
+{"delivery_no":"","delivery_date":"","customer_name":"","order_no":"","items":[{"code":"","name":"","spec":"","unit":"件","delivered_qty":0,"remark":""}]}`});
+        const raw = await callClaude([{role:"user",content:msgContent}], "你是中文送货单OCR结构化助手。必须只返回合法JSON对象，不能返回markdown、解释、前后缀文字。", 2500);
+        const parsed = (raw.items || []).map(it=>{
+          const qty = toNumber(it.delivered_qty ?? it.qty ?? it.quantity, 0);
+          return {
+            code: String(it.code || it.item_code || "").trim(),
+            name: String(it.name || it.product_name || it.goods_name || "").trim(),
+            spec: String(it.spec || it.specification || "").trim(),
+            color: String(it.color || "白色").trim(),
+            unit: String(it.unit || "件").trim(),
+            contract_qty: toNumber(it.contract_qty, contract?.contract_qty || 0),
+            delivered_qty: qty,
+            delivered_qty_input: qty ? String(qty) : "",
+            note: [raw.delivery_no, it.remark || it.note || ""].filter(Boolean).join(" / "),
+          };
+        }).filter(it => it.name && it.delivered_qty > 0);
         allItems = [...allItems, ...parsed];
         if (raw.delivery_no) allNos.push(raw.delivery_no);
       }
@@ -862,20 +858,15 @@ export default function App() {
       const n = raw==="" ? 0 : Number(raw);
       return {...it, delivered_qty: Number.isFinite(n) ? n : 0};
     });
-    const finalItems = mergeDeliveryItems(committed);
-    if (!finalItems.length) {
-      setError("没有有效送货明细，不能生成对账单");
-      return;
-    }
-    const s = calcSettlement(contract, finalItems);
+    const s = calcSettlement(contract, committed);
     const contractWithMode = {...contract, settlement_mode: "actual"};
-    generateExcel(contractWithMode, finalItems, s);
+    generateExcel(contractWithMode, committed, s);
     clearDraft(contract.contract_no);
     setDrafts(loadAllDrafts());
     fetchCustomers().then(setCustomers).catch(()=>{});
     try {
       setSaveMsg("正在保存记录…");
-      await saveStatement(contractWithMode, finalItems, s);
+      await saveStatement(contractWithMode, committed, s);
       setSaveMsg("✅ 已保存到历史记录，草稿已清除");
       setTimeout(()=>setSaveMsg(""), 4000);
     } catch(e) { setSaveMsg("⚠ 导出成功，但保存记录失败："+e.message); }
@@ -1110,18 +1101,10 @@ export default function App() {
                       <>
                         <h3 style={{margin:"0 0 16px",fontSize:16,color:"#1e293b",fontWeight:700}}>第二步：上传送货单</h3>
                         <div
-                          onClick={()=>document.getElementById("delivery-multi-input")?.click()}
-                          onDrop={e=>{e.preventDefault();appendDeliveryFiles(e.dataTransfer.files);}}
+                          onClick={()=>{const inp=document.createElement("input");inp.type="file";inp.accept="image/*,.pdf,application/pdf";inp.multiple=true;inp.onchange=e=>addDeliveryFiles(e.target.files);inp.click();}}
+                          onDrop={e=>{e.preventDefault();addDeliveryFiles(e.dataTransfer.files);}}
                           onDragOver={e=>e.preventDefault()}
                           style={{border:"2px dashed #475569",borderRadius:12,padding:"24px 20px",textAlign:"center",cursor:"pointer",background:"#f8fafc",minHeight:90,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6}}>
-                          <input
-                            id="delivery-multi-input"
-                            type="file"
-                            accept="image/*,.pdf,application/pdf"
-                            multiple
-                            style={{display:"none"}}
-                            onChange={e=>appendDeliveryFiles(e.target.files)}
-                          />
                           <span style={{fontSize:28}}>📄</span>
                           <span style={{fontSize:13,color:"#64748b",fontWeight:600}}>点击或拖拽上传送货单（可多张）</span>
                           <span style={{fontSize:11,color:"#94a3b8"}}>支持 JPG/PNG/PDF，可同时选多个文件</span>
