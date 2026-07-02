@@ -180,8 +180,14 @@ const callClaude = async (messages, system, maxTokens = 1200) => {
     if (res.ok) {
       const text = data.content?.map((b) => b.text || "").join("").trim() || "";
       const clean = text.replace(/```json[\s\S]*?```|```/g, "").trim();
-      try { return JSON.parse(clean); }
-      catch { throw new Error("模型返回的不是合法 JSON，请重试"); }
+      // Try direct parse first
+      try { return JSON.parse(clean); } catch {}
+      // Try extracting JSON object with regex
+      const match = clean.match(/\{[\s\S]*\}/);
+      if (match) {
+        try { return JSON.parse(match[0]); } catch {}
+      }
+      throw new Error("模型返回的不是合法 JSON，请重试");
     }
 
     const message = data?.error?.message || `HTTP ${res.status}`;
@@ -731,7 +737,7 @@ export default function App() {
         const msgContent = isPdf
           ? [{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}]
           : [{type:"image",source:{type:"base64",media_type:mime,data:b64}}];
-        msgContent.push({type:"text",text:`提取送货单中每一行物料的名称、颜色、规格和数量。数量栏只取最终数字，忽略算式。只输出一个JSON对象，不要任何解释、不要markdown代码块，直接以{开头以}结尾：{"delivery_no":"","delivery_date":"","items":[{"name":"","spec":"","color":"","delivered_qty":数字}]}`});
+        msgContent.push({type:"text",text:`这是一张送货单（图片可能有旋转，请自动识别方向）。提取每一行物料的名称、规格和数量，数量取数字栏的最终数字（规格栏有算式如1064×40+550则数量为43110）。只输出JSON，不要任何文字说明：{"delivery_no":"","delivery_date":"","items":[{"name":"","spec":"","color":"","delivered_qty":数字}]}`});
         const raw = await callClaude([{role:"user",content:msgContent}], "你是仓储单据解析助手。只输出纯JSON，不要markdown代码块，不要任何解释，直接以{开头以}结尾。", 2000);
         const parsed = (raw.items || []).map(it=>({
           name: String(it.name||"").trim(),
